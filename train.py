@@ -1,4 +1,4 @@
-from ball_jepa import BallJEPA
+from ball_jepa2 import BallJEPA
 from dataset import *
 from jepa_config import *
 
@@ -18,3 +18,4 @@ ball_jepa = BallJEPA(
     PRED_FINAL_ACTIVATION
 )
 ball_jepa.train_model(wall_data, num_epochs=20, lr=1e-3, lambda_=5e-5)
+ball_jepa.train_model(wall_data, num_epochs=10, lr=5e-4, lambda_=5e-5)  # Phase 2
