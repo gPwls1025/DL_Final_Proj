@@ -156,7 +156,7 @@ class BallJEPA(nn.Module):
                     targets, _ = self._produce_encodings(states_out)
                     if phase == 1:
                         # only consider ball position
-                        loss = loss = criterion(preds, targets[:, 0, :])
+                        loss = criterion(preds, targets[:, 0, :])
                     else: 
                         # only consider ball and wall position
                         loss = criterion(preds, targets)

@@ -1,4 +1,4 @@
-from ball_jepa2 import BallJEPA
+from ball_jepa import BallJEPA
 from dataset import *
 from jepa_config import *
 
