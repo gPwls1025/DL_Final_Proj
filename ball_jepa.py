@@ -6,6 +6,7 @@ from dataset import *
 from models import CNN, MLP, IMAGE_SIZE, TOL
 
 from tqdm import tqdm
+import random
 
 BALL_CNN_PATH = "ball_cnn.pth"
 BORDER_CNN_PATH = "border_cnn.pth"
@@ -19,7 +20,7 @@ class BallJEPA(nn.Module):
         pred_layer_sizes, pred_final_activation
     ):
         super(BallJEPA, self).__init__()
-        self.repr_dim = ball_cnn_out_dim + border_cnn_out_dim
+        self.repr_dim = ball_cnn_out_dim
 
         self.ball_cnn = CNN(
             channel_sizes=ball_cnn_channel_sizes,
@@ -36,12 +37,31 @@ class BallJEPA(nn.Module):
             final_activation=border_cnn_final_activation
         ).to("cuda")
 
-        self.projector = MLP([self.repr_dim, 2048, 2048, 2048], nn.ReLU())
+        # Add a new MLP after encoders to project the representations into a space where VICReg loss will be applied
+        self.projector = MLP(
+            layer_sizes=[self.repr_dim, 2048, 2048, 2048],
+            final_activation=nn.ReLU()
+        ).to("cuda")
 
         self.predictor = MLP(
             layer_sizes=pred_layer_sizes,
             final_activation=pred_final_activation
         ).to("cuda")
+
+        # 2nd predictor for middle wall prediction
+        """
+        ball_cnn_out_dim: output from ball CNN (ball encoding)
+        border_cnn_out_dim: oujtput from boarder CNN (border encoding)
+        + 2: including action input (2d; x, y movement)
+        32: hidden layer size
+        2: output dimension
+        """
+        self.wall_predictor = MLP(
+            layer_sizes=[ball_cnn_out_dim + border_cnn_out_dim + 2, 32, 2],
+            final_activation=torch.tanh
+        ).to("cuda")
+
+        self.training_phase = 1
 
     def load_weights(self):
         self.ball_cnn.load_state_dict(torch.load(BALL_CNN_PATH))
@@ -61,11 +81,22 @@ class BallJEPA(nn.Module):
 
         return ball_encodings, border_encodings
 
-    def _predict_next_state(self, ball_encodings, border_encodings, actions, apply_mults):
+    def _predict_next_state(self, ball_encodings, border_encodings, actions):
+        # first predictor
         inputs = torch.cat((ball_encodings, actions, border_encodings), dim=1)
         mults = self.predictor(inputs)
+        initial_prediction = ball_encodings + mults * actions
 
-        return ball_encodings + (mults if apply_mults else 1) * actions, mults
+        if self.training_phase == 2:
+            # second predictor 
+            wall_inputs = torch.cat((initial_prediction, border_encodings, actions), dim=1)
+            wall_adjustment = self.wall_predictor(wall_inputs)
+            final_prediction = initial_prediction + wall_adjustment * actions
+        else:
+            # phase 1
+            final_prediction = initial_prediction
+
+        return final_prediction, mults
 
     def vicreg_loss(self, z1, z2):
         # Invariance loss
@@ -86,15 +117,40 @@ class BallJEPA(nn.Module):
         
         return sim_loss + std_loss + cov_loss
 
-    def forward(self, states, actions):
+    # add augmentation 
+    def augment(states):
+        # Random rotation
+        angle = random.choice([0, 90, 180, 270])
+        states = TF.rotate(states, angle)
+
+        # Random flip
+        if random.random() > 0.5:
+            states = TF.hflip(states)
+        if random.random() > 0.5:
+            states = TF.vflip(states)
+
+        # Small random translation
+        max_dx, max_dy = 2, 2
+        dx = random.randint(-max_dx, max_dx)
+        dy = random.randint(-max_dy, max_dy)
+        states = TF.affine(states, angle=0, translate=(dx, dy), scale=1, shear=0)
+
+        # Add small Gaussian noise
+        noise = torch.randn_like(states) * 0.02
+        states = states + noise
+        states = torch.clamp(states, 0, 1)
+
+        return states
+
+    def forward(self, states, actions, incl_border_encodings=False):
         init_states = states[:,0,:,:,:]
         ball_encs, border_encs = self._produce_encodings(init_states)
 
-        out_encs = [torch.cat((ball_encs, border_encs), dim=1)]
+        out_encs = [torch.cat((ball_encs,border_encs) if incl_border_encodings else (ball_encs,), dim=1)]
 
         for idx in range(1, states.shape[1]):
-            ball_encs, _ = self._predict_next_state(ball_encs, border_encs, actions[:,idx-1,:] / IMAGE_SIZE, True)
-            out_encs.append(torch.cat((ball_encs, border_encs), dim=1))
+            ball_encs, _ = self._predict_next_state(ball_encs, border_encs, actions[:,idx-1,:] / IMAGE_SIZE)
+            out_encs.append(torch.cat((ball_encs,border_encs) if incl_border_encodings else (ball_encs,), dim=1))
 
         return torch.stack(out_encs)
 
@@ -157,8 +213,8 @@ class BallJEPA(nn.Module):
                     preds, mults = self._predict_next_state(ball_enc, border_enc, actions)
 
                     targets, _ = self._produce_encodings(states_out)
-
                     loss = criterion(preds, targets)
+
                     secondary_loss = lambda_ * torch.pow(1 - mults, 2).mean()
 
                     total_loss = loss + secondary_loss + vicreg_loss
@@ -169,7 +225,7 @@ class BallJEPA(nn.Module):
                     losses.append(loss.item())
                     secondary_losses.append(secondary_loss.item())
                     vicreg_losses.append(vicreg_loss.item())
-                    stds.append(targets.std(dim=0).mean().item() + TOL)
+                    stds.append(torch.tensor([t.std(dim=0).mean().item() for t in targets]).mean() + TOL)
 
                     desc = f"Avg RMSE = {round(torch.sqrt(torch.mean(torch.tensor(losses[-100:]))).item(), 6)}, "
                     desc += f"Targets Stdev = {round(torch.mean(torch.tensor(stds[-100:])).item(), 6)}, "
