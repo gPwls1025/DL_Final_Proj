@@ -72,11 +72,12 @@ class CNN(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, layer_sizes, final_activation):
+    def __init__(self, layer_sizes, final_activation, leaky_relu_mult):
         super(MLP, self).__init__()
 
         self.final_activation = final_activation
         self.layers = nn.ModuleList()
+        self.leaky_relu_mult = leaky_relu_mult
 
         for idx in range(len(layer_sizes)-1):
             self.layers.append(nn.Linear(layer_sizes[idx], layer_sizes[idx+1]))

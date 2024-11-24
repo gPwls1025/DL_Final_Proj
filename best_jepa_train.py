@@ -1,6 +1,6 @@
-from ball_jepa import BallJEPA
+from best_ball_jepa import BallJEPA
 from dataset import *
-from jepa_config import *
+from best_jepa_config import *
 
 wall_data = create_wall_dataloader(f"{DATA_PATH}/train")
 ball_jepa = BallJEPA(
