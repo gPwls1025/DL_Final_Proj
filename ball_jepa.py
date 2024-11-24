@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 from torch.optim import Adam
+import torchvision.transforms.functional as TF
+import torch.nn.functional as F
 
 from dataset import *
 from models import CNN, MLP, IMAGE_SIZE, TOL
@@ -12,25 +14,30 @@ BALL_CNN_PATH = "ball_cnn.pth"
 BORDER_CNN_PATH = "border_cnn.pth"
 PREDICTOR_PATH = "predictor.pth"
 
+def off_diagonal(x):
+    n, m = x.shape
+    assert n == m
+    return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
+
 def augment(states):
     # Random rotation
     angle = random.choice([0, 90, 180, 270])
     states = TF.rotate(states, angle)
 
     # Random flip
-    if random.random() > 0.5:
+    if random.random() > 0.3:
         states = TF.hflip(states)
-    if random.random() > 0.5:
+    if random.random() > 0.3:
         states = TF.vflip(states)
 
     # Small random translation
-    max_dx, max_dy = 2, 2
+    max_dx, max_dy = 3, 3
     dx = random.randint(-max_dx, max_dx)
     dy = random.randint(-max_dy, max_dy)
     states = TF.affine(states, angle=0, translate=(dx, dy), scale=1, shear=0)
 
     # Add small Gaussian noise
-    noise = torch.randn_like(states) * 0.02
+    noise = torch.randn_like(states) * 0.005
     states = states + noise
     states = torch.clamp(states, 0, 1)
 
@@ -62,7 +69,7 @@ class BallJEPA(nn.Module):
 
         # Add a new MLP after encoders to project the representations into a space where VICReg loss will be applied
         self.projector = MLP(
-            layer_sizes=[self.repr_dim, 2048, 2048, 2048],
+            layer_sizes=[ball_cnn_out_dim + border_cnn_out_dim, 2048, 2048, 2048],
             final_activation=nn.ReLU()
         ).to("cuda")
 
@@ -121,22 +128,27 @@ class BallJEPA(nn.Module):
 
         return final_prediction, mults
 
-    def vicreg_loss(self, z1, z2):
+    # REMOVE THIS AFTER CHECKING
+    def monitor_embeddings(z1, z2):
+        print(f"Mean z1: {z1.mean().item():.6f}, Std z1: {z1.std().item():.6f}")
+        print(f"Mean z2: {z2.mean().item():.6f}, Std z2: {z2.std().item():.6f}")
+
+    def vicreg_loss(self, z1, z2, var_weight=25.0, inv_weight=1.0, cov_weight=1.0, eps=1e-4):
         # Invariance loss
-        sim_loss = F.mse_loss(z1, z2)
+        sim_loss = inv_weight * F.mse_loss(z1, z2)
         
-        # Variance loss
-        std_z1 = torch.sqrt(z1.var(dim=0) + 1e-04)
-        std_z2 = torch.sqrt(z2.var(dim=0) + 1e-04)
-        std_loss = torch.mean(F.relu(1 - std_z1)) + torch.mean(F.relu(1 - std_z2))
+        # Variance loss (increased weight to penalize low variance)
+        std_z1 = torch.sqrt(z1.var(dim=0) + eps)  # Added epsilon for stability
+        std_z2 = torch.sqrt(z2.var(dim=0) + eps)
+        std_loss = var_weight * (torch.mean(F.relu(1 - std_z1)) + torch.mean(F.relu(1 - std_z2)))
         
-        # Covariance loss
+        # Covariance loss (with epsilon and weight)
         z1 = z1 - z1.mean(dim=0)
         z2 = z2 - z2.mean(dim=0)
-        cov_z1 = (z1.T @ z1) / (z1.shape[0] - 1)
-        cov_z2 = (z2.T @ z2) / (z2.shape[0] - 1)
-        cov_loss = off_diagonal(cov_z1).pow_(2).sum() / z1.shape[1] + \
-                off_diagonal(cov_z2).pow_(2).sum() / z2.shape[1]
+        cov_z1 = (z1.T @ z1) / (z1.shape[0] - 1 + eps)  # Added epsilon
+        cov_z2 = (z2.T @ z2) / (z2.shape[0] - 1 + eps)
+        cov_loss = cov_weight * (off_diagonal(cov_z1).pow_(2).sum() / z1.shape[1] + 
+                                off_diagonal(cov_z2).pow_(2).sum() / z2.shape[1])
         
         return sim_loss + std_loss + cov_loss
 
@@ -204,6 +216,9 @@ class BallJEPA(nn.Module):
                     # Project embeddings
                     z1 = self.projector(torch.cat((ball_enc1, border_enc1), dim=1))
                     z2 = self.projector(torch.cat((ball_enc2, border_enc2), dim=1))
+
+                    # Add monitoring here - REMOVE LATER
+                    monitor_embeddings(z1, z2)
 
                     # Calculate VICReg loss
                     vicreg_loss = self.vicreg_loss(z1, z2)
