@@ -12,6 +12,29 @@ BALL_CNN_PATH = "ball_cnn.pth"
 BORDER_CNN_PATH = "border_cnn.pth"
 PREDICTOR_PATH = "predictor.pth"
 
+def augment(states):
+    # Random rotation
+    angle = random.choice([0, 90, 180, 270])
+    states = TF.rotate(states, angle)
+
+    # Random flip
+    if random.random() > 0.5:
+        states = TF.hflip(states)
+    if random.random() > 0.5:
+        states = TF.vflip(states)
+
+    # Small random translation
+    max_dx, max_dy = 2, 2
+    dx = random.randint(-max_dx, max_dx)
+    dy = random.randint(-max_dy, max_dy)
+    states = TF.affine(states, angle=0, translate=(dx, dy), scale=1, shear=0)
+
+    # Add small Gaussian noise
+    noise = torch.randn_like(states) * 0.02
+    states = states + noise
+    states = torch.clamp(states, 0, 1)
+
+    return states
 
 class BallJEPA(nn.Module):
     def __init__(
@@ -117,30 +140,6 @@ class BallJEPA(nn.Module):
         
         return sim_loss + std_loss + cov_loss
 
-    # add augmentation 
-    def augment(states):
-        # Random rotation
-        angle = random.choice([0, 90, 180, 270])
-        states = TF.rotate(states, angle)
-
-        # Random flip
-        if random.random() > 0.5:
-            states = TF.hflip(states)
-        if random.random() > 0.5:
-            states = TF.vflip(states)
-
-        # Small random translation
-        max_dx, max_dy = 2, 2
-        dx = random.randint(-max_dx, max_dx)
-        dy = random.randint(-max_dy, max_dy)
-        states = TF.affine(states, angle=0, translate=(dx, dy), scale=1, shear=0)
-
-        # Add small Gaussian noise
-        noise = torch.randn_like(states) * 0.02
-        states = states + noise
-        states = torch.clamp(states, 0, 1)
-
-        return states
 
     def forward(self, states, actions, incl_border_encodings=False):
         init_states = states[:,0,:,:,:]
