@@ -17,5 +17,5 @@ ball_jepa = BallJEPA(
     PRED_LAYER_SIZES,
     PRED_FINAL_ACTIVATION
 )
-ball_jepa.train_model(wall_data, num_epochs=20, lr=1e-3, lambda_=5e-5)
-ball_jepa.train_model(wall_data, num_epochs=10, lr=5e-4, lambda_=5e-5)  # Phase 2
+ball_jepa.train_model(wall_data, training_phase=1, num_epochs=10, lr=1e-3, lambda_=5e-5)
+ball_jepa.train_model(wall_data, training_phase=2, num_epochs=5, lr=1e-3, lambda_=5e-5)  # Phase 2
