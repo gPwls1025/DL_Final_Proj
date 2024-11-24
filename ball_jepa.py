@@ -131,12 +131,14 @@ class BallJEPA(nn.Module):
     def vicreg_loss(self, z1, z2, var_weight=25.0, inv_weight=1.0, cov_weight=1.0, eps=1e-4):
         # Invariance loss
         sim_loss = inv_weight * F.mse_loss(z1, z2)
+        print("Invariance loss:", sim_loss)
         
         # Variance loss (increased weight to penalize low variance)
         std_z1 = torch.sqrt(z1.var(dim=0) + eps)  # Added epsilon for stability
         std_z2 = torch.sqrt(z2.var(dim=0) + eps)
         std_loss = var_weight * (torch.mean(F.relu(1 - std_z1)) + torch.mean(F.relu(1 - std_z2)))
-        
+        print("Variance loss:", std_loss)
+
         # Covariance loss (with epsilon and weight)
         z1 = z1 - z1.mean(dim=0)
         z2 = z2 - z2.mean(dim=0)
@@ -144,7 +146,8 @@ class BallJEPA(nn.Module):
         cov_z2 = (z2.T @ z2) / (z2.shape[0] - 1 + eps)
         cov_loss = cov_weight * (off_diagonal(cov_z1).pow_(2).sum() / z1.shape[1] + 
                                 off_diagonal(cov_z2).pow_(2).sum() / z2.shape[1])
-        
+        print("Covariance loss:", cov_loss)
+
         return sim_loss + std_loss + cov_loss
 
 
@@ -160,83 +163,88 @@ class BallJEPA(nn.Module):
 
         return torch.stack(out_encs)
 
-    def train_model(self, train_data, num_epochs=5, lr=1e-3, lambda_=0):
-        params = list(self.ball_cnn.parameters()) + list(self.border_cnn.parameters()) + list(self.predictor.parameters()) + list(self.wall_predictor.parameters())
+    def train_model(self, train_data, training_phase, num_epochs=5, lr=1e-3, lambda_=0):
+        # Parameter selection based on training phase
+        if training_phase == 1:
+            params = self.ball_cnn.parameters()
+        elif training_phase == 2:
+            self.load_weights()
+            params = list(self.ball_cnn.parameters()) + list(self.border_cnn.parameters()) + list(self.predictor.parameters()) + list(self.wall_predictor.parameters()) + list(self.projector.parameters())
+            
         self.ball_cnn.train()
         self.border_cnn.train()
         self.predictor.train()
         self.wall_predictor.train()
 
-        optimizer = Adam(params, lr=lr, weight_decay=0.01)
+        optimizer = Adam(params, lr=lr)
         criterion = nn.MSELoss()
 
-        for phase in [1, 2]:
-            self.training_phase = phase
-            print(f"Training Phase {phase}")
-            for epoch in range(num_epochs):
-                print(f"Epoch {epoch + 1}")
-                pbar = tqdm(train_data)
-                losses = []
-                secondary_losses = []
-                vicreg_losses = []
-                stds = []
+        for epoch in range(num_epochs):
+            print(f"Epoch {epoch + 1}")
+            pbar = tqdm(train_data)
+            losses = []
+            secondary_losses = []
+            vicreg_losses = []
+            stds = []
 
-                for batch in pbar:
-                    optimizer.zero_grad()
+            for batch in pbar:
+                optimizer.zero_grad()
 
-                    states_shape = (
-                        batch.states.shape[0] * (batch.states.shape[1] - 1),
-                        batch.states.shape[2],
-                        batch.states.shape[3],
-                        batch.states.shape[4]
-                    )
-                    actions_shape = (batch.actions.shape[0] * batch.actions.shape[1], batch.actions.shape[2])
-        
-                    states_in = batch.states[:,:-1,:,:,:].reshape(*states_shape).to("cuda")
-                    states_out = batch.states[:,1:,:,:,:].reshape(*states_shape).to("cuda")
-                    actions = batch.actions / IMAGE_SIZE
-                    actions = actions.reshape(*actions_shape).to("cuda")
+                states_shape = (
+                    batch.states.shape[0] * (batch.states.shape[1] - 1),
+                    batch.states.shape[2],
+                    batch.states.shape[3],
+                    batch.states.shape[4]
+                )
+                actions_shape = (batch.actions.shape[0] * batch.actions.shape[1], batch.actions.shape[2])
 
-                    states_in = states_in[:,:,:-1,:-1]
-                    states_out = states_out[:,:,:-1,:-1]
+                states_in = batch.states[:,:-1,:,:,:].reshape(*states_shape).to("cuda")
+                states_out = batch.states[:,1:,:,:,:].reshape(*states_shape).to("cuda")
+                actions = batch.actions / IMAGE_SIZE
+                actions = actions.reshape(*actions_shape).to("cuda")
 
-                    # phase 1 uses only these basic operations
-                    ball_enc, border_enc = self._produce_encodings(states_in)
-                    preds, mults = self._predict_next_state(ball_enc, border_enc, actions)
-                    targets, _ = self._produce_encodings(states_out)
-                    loss = criterion(preds, targets)
-                    secondary_loss = lambda_ * torch.pow(1 - mults, 2).mean()
+                states_in = states_in[:,:,:-1,:-1]
+                states_out = states_out[:,:,:-1,:-1]
 
-                    # phase 2 adds VICReg on top of these operations to prevent collapse in the wall predictor
-                    if phase == 2:
-                        states_in_aug1 = augment(states_in)
-                        states_in_aug2 = augment(states_in)
-                        ball_enc1, border_enc1 = self._produce_encodings(states_in_aug1)
-                        ball_enc2, border_enc2 = self._produce_encodings(states_in_aug2)
-                        z1 = self.projector(torch.cat((ball_enc1, border_enc1), dim=1))
-                        z2 = self.projector(torch.cat((ball_enc2, border_enc2), dim=1))
-                        vicreg_loss = self.vicreg_loss(z1, z2)
-                        total_loss = loss + secondary_loss + vicreg_loss
-                        vicreg_losses.append(vicreg_loss.item())
-                    else:
-                        total_loss = loss + secondary_loss
-                        vicreg_losses.append(0.0)
+                # Basic operations for both phases
+                ball_enc, border_enc = self._produce_encodings(states_in)
+                preds, mults = self._predict_next_state(ball_enc, border_enc, actions)
+                targets, _ = self._produce_encodings(states_out)
+                loss = criterion(preds, targets)
+                secondary_loss = lambda_ * torch.pow(1 - mults, 2).mean()
 
-                    total_loss.backward()
-                    optimizer.step()
+                # Add VICReg only in phase 2
+                if training_phase == 2:
+                    states_in_aug1 = augment(states_in)
+                    states_in_aug2 = augment(states_in)
+                    ball_enc1, border_enc1 = self._produce_encodings(states_in_aug1)
+                    ball_enc2, border_enc2 = self._produce_encodings(states_in_aug2)
+                    z1 = self.projector(torch.cat((ball_enc1, border_enc1), dim=1))
+                    z2 = self.projector(torch.cat((ball_enc2, border_enc2), dim=1))
+                    monitor_embeddings(z1, z2)
+                    vicreg_loss = self.vicreg_loss(z1, z2)
+                    total_loss = loss + secondary_loss + vicreg_loss
+                    vicreg_losses.append(vicreg_loss.item())
+                else:
+                    total_loss = loss + secondary_loss
+                    vicreg_losses.append(0.0)
 
-                    losses.append(loss.item())
-                    secondary_losses.append(secondary_loss.item())
-                    stds.append(torch.tensor([t.std(dim=0).mean().item() for t in targets]).mean() + TOL)
+                total_loss.backward()
+                optimizer.step()
 
-                    desc = f"Avg RMSE = {round(torch.sqrt(torch.mean(torch.tensor(losses[-100:]))).item(), 6)}, "
-                    desc += f"Targets Stdev = {round(torch.mean(torch.tensor(stds[-100:])).item(), 6)}, "
-                    desc += f"R2 = {round(1 - (torch.sqrt(torch.mean(torch.tensor(losses[-100:]))).item() / torch.mean(torch.tensor(stds[-100:])).item()) ** 2, 4)}, "
-                    desc += f"Avg Secondary Loss = {round(torch.mean(torch.tensor(secondary_losses[-100:])).item() / lambda_, 4)}, "
-                    desc += f"Avg VICReg Loss = {round(torch.mean(torch.tensor(vicreg_losses[-100:])).item(), 4)}"
-                    pbar.set_description(desc)
+                losses.append(loss.item())
+                secondary_losses.append(secondary_loss.item())
+                stds.append(targets.std(dim=0).mean().item() + TOL)
 
-                self.save_weights()
+                desc = f"Avg RMSE = {round(torch.sqrt(torch.mean(torch.tensor(losses[-100:]))).item(), 6)}, "
+                desc += f"Targets Stdev = {round(torch.mean(torch.tensor(stds[-100:])).item(), 6)}, "
+                desc += f"R2 = {round(1 - (torch.sqrt(torch.mean(torch.tensor(losses[-100:]))).item() / torch.mean(torch.tensor(stds[-100:])).item()) ** 2, 4)}, "
+                desc += f"Avg Secondary Loss = {round(torch.mean(torch.tensor(secondary_losses[-100:])).item() / lambda_, 4)}"
+                if training_phase == 2:
+                    desc += f", Avg VICReg Loss = {round(torch.mean(torch.tensor(vicreg_losses[-100:])).item(), 4)}"
+                pbar.set_description(desc)
+
+            self.save_weights()
 
         self.ball_cnn.eval()
         self.border_cnn.eval()
