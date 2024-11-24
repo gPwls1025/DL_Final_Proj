@@ -128,11 +128,6 @@ class BallJEPA(nn.Module):
 
         return final_prediction, mults
 
-    # REMOVE THIS AFTER CHECKING
-    def monitor_embeddings(z1, z2):
-        print(f"Mean z1: {z1.mean().item():.6f}, Std z1: {z1.std().item():.6f}")
-        print(f"Mean z2: {z2.mean().item():.6f}, Std z2: {z2.std().item():.6f}")
-
     def vicreg_loss(self, z1, z2, var_weight=25.0, inv_weight=1.0, cov_weight=1.0, eps=1e-4):
         # Invariance loss
         sim_loss = inv_weight * F.mse_loss(z1, z2)
@@ -205,40 +200,33 @@ class BallJEPA(nn.Module):
                     states_in = states_in[:,:,:-1,:-1]
                     states_out = states_out[:,:,:-1,:-1]
 
-                    # Apply data augmentation
-                    states_in_aug1 = augment(states_in)
-                    states_in_aug2 = augment(states_in)
-
-                    # Get embeddings for both views
-                    ball_enc1, border_enc1 = self._produce_encodings(states_in_aug1)
-                    ball_enc2, border_enc2 = self._produce_encodings(states_in_aug2)
-
-                    # Project embeddings
-                    z1 = self.projector(torch.cat((ball_enc1, border_enc1), dim=1))
-                    z2 = self.projector(torch.cat((ball_enc2, border_enc2), dim=1))
-
-                    # Add monitoring here - REMOVE LATER
-                    monitor_embeddings(z1, z2)
-
-                    # Calculate VICReg loss
-                    vicreg_loss = self.vicreg_loss(z1, z2)
-
+                    # phase 1 uses only these basic operations
                     ball_enc, border_enc = self._produce_encodings(states_in)
                     preds, mults = self._predict_next_state(ball_enc, border_enc, actions)
-
                     targets, _ = self._produce_encodings(states_out)
                     loss = criterion(preds, targets)
-
                     secondary_loss = lambda_ * torch.pow(1 - mults, 2).mean()
 
-                    total_loss = loss + secondary_loss + vicreg_loss
+                    # phase 2 adds VICReg on top of these operations to prevent collapse in the wall predictor
+                    if phase == 2:
+                        states_in_aug1 = augment(states_in)
+                        states_in_aug2 = augment(states_in)
+                        ball_enc1, border_enc1 = self._produce_encodings(states_in_aug1)
+                        ball_enc2, border_enc2 = self._produce_encodings(states_in_aug2)
+                        z1 = self.projector(torch.cat((ball_enc1, border_enc1), dim=1))
+                        z2 = self.projector(torch.cat((ball_enc2, border_enc2), dim=1))
+                        vicreg_loss = self.vicreg_loss(z1, z2)
+                        total_loss = loss + secondary_loss + vicreg_loss
+                        vicreg_losses.append(vicreg_loss.item())
+                    else:
+                        total_loss = loss + secondary_loss
+                        vicreg_losses.append(0.0)
 
                     total_loss.backward()
                     optimizer.step()
 
                     losses.append(loss.item())
                     secondary_losses.append(secondary_loss.item())
-                    vicreg_losses.append(vicreg_loss.item())
                     stds.append(torch.tensor([t.std(dim=0).mean().item() for t in targets]).mean() + TOL)
 
                     desc = f"Avg RMSE = {round(torch.sqrt(torch.mean(torch.tensor(losses[-100:]))).item(), 6)}, "
