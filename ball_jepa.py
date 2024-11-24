@@ -115,6 +115,10 @@ class BallJEPA(nn.Module):
         # first predictor
         inputs = torch.cat((ball_encodings, actions, border_encodings), dim=1)
         mults = self.predictor(inputs)
+
+        # Add L2 regularization to mults
+        mults_reg = torch.norm(mults, p=2)
+
         initial_prediction = ball_encodings + mults * actions
 
         if self.training_phase == 2:
@@ -126,9 +130,9 @@ class BallJEPA(nn.Module):
             # phase 1
             final_prediction = initial_prediction
 
-        return final_prediction, mults
+        return final_prediction, mults, mults_reg
 
-    def vicreg_loss(self, z1, z2, var_weight=25.0, inv_weight=1.0, cov_weight=1.0, eps=1e-4):
+    def vicreg_loss(self, z1, z2, var_weight=25.0, inv_weight=25.0, cov_weight=1, eps=1e-4):
         # Invariance loss
         sim_loss = inv_weight * F.mse_loss(z1, z2)
         print("Invariance loss:", sim_loss)
@@ -142,8 +146,8 @@ class BallJEPA(nn.Module):
         # Covariance loss (with epsilon and weight)
         z1 = z1 - z1.mean(dim=0)
         z2 = z2 - z2.mean(dim=0)
-        cov_z1 = (z1.T @ z1) / (z1.shape[0] - 1 + eps)  # Added epsilon
-        cov_z2 = (z2.T @ z2) / (z2.shape[0] - 1 + eps)
+        cov_z1 = (z1.T @ z1) / (z1.shape[0] - 1)  
+        cov_z2 = (z2.T @ z2) / (z2.shape[0] - 1)
         cov_loss = cov_weight * (off_diagonal(cov_z1).pow_(2).sum() / z1.shape[1] + 
                                 off_diagonal(cov_z2).pow_(2).sum() / z2.shape[1])
         print("Covariance loss:", cov_loss)
@@ -170,7 +174,7 @@ class BallJEPA(nn.Module):
         elif training_phase == 2:
             self.load_weights()
             params = list(self.ball_cnn.parameters()) + list(self.border_cnn.parameters()) + list(self.predictor.parameters()) + list(self.wall_predictor.parameters()) + list(self.projector.parameters())
-            
+
         self.ball_cnn.train()
         self.border_cnn.train()
         self.predictor.train()
@@ -210,8 +214,14 @@ class BallJEPA(nn.Module):
                 ball_enc, border_enc = self._produce_encodings(states_in)
                 preds, mults = self._predict_next_state(ball_enc, border_enc, actions)
                 targets, _ = self._produce_encodings(states_out)
+                # measures how well the model predicts the next state -> ball prediction
                 loss = criterion(preds, targets)
+                # Penalizes when multiplication factors (mults) deviate from 1
                 secondary_loss = lambda_ * torch.pow(1 - mults, 2).mean()
+
+                # Backward passes for basic operations
+                loss.backward(retain_graph=True)
+                secondary_loss.backward(retain_graph=True)
 
                 # Add VICReg only in phase 2
                 if training_phase == 2:
@@ -221,15 +231,13 @@ class BallJEPA(nn.Module):
                     ball_enc2, border_enc2 = self._produce_encodings(states_in_aug2)
                     z1 = self.projector(torch.cat((ball_enc1, border_enc1), dim=1))
                     z2 = self.projector(torch.cat((ball_enc2, border_enc2), dim=1))
-                    monitor_embeddings(z1, z2)
+
                     vicreg_loss = self.vicreg_loss(z1, z2)
-                    total_loss = loss + secondary_loss + vicreg_loss
+                    vicreg_loss.backward()
                     vicreg_losses.append(vicreg_loss.item())
                 else:
-                    total_loss = loss + secondary_loss
                     vicreg_losses.append(0.0)
-
-                total_loss.backward()
+                
                 optimizer.step()
 
                 losses.append(loss.item())
