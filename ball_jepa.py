@@ -116,9 +116,6 @@ class BallJEPA(nn.Module):
         inputs = torch.cat((ball_encodings, actions, border_encodings), dim=1)
         mults = self.predictor(inputs)
 
-        # Add L2 regularization to mults
-        mults_reg = torch.norm(mults, p=2)
-
         initial_prediction = ball_encodings + mults * actions
 
         if self.training_phase == 2:
@@ -130,7 +127,7 @@ class BallJEPA(nn.Module):
             # phase 1
             final_prediction = initial_prediction
 
-        return final_prediction, mults, mults_reg
+        return final_prediction, mults
 
     def vicreg_loss(self, z1, z2, var_weight=25.0, inv_weight=25.0, cov_weight=1, eps=1e-4):
         # Invariance loss
@@ -219,6 +216,10 @@ class BallJEPA(nn.Module):
                 # Penalizes when multiplication factors (mults) deviate from 1
                 secondary_loss = lambda_ * torch.pow(1 - mults, 2).mean()
 
+                losses.append(loss.item())
+                secondary_losses.append(secondary_loss.item())
+                stds.append(targets.std(dim=0).mean().item() + TOL)
+
                 # Backward passes for basic operations
                 loss.backward(retain_graph=True)
                 secondary_loss.backward(retain_graph=True)
@@ -239,10 +240,6 @@ class BallJEPA(nn.Module):
                     vicreg_losses.append(0.0)
                 
                 optimizer.step()
-
-                losses.append(loss.item())
-                secondary_losses.append(secondary_loss.item())
-                stds.append(targets.std(dim=0).mean().item() + TOL)
 
                 desc = f"Avg RMSE = {round(torch.sqrt(torch.mean(torch.tensor(losses[-100:]))).item(), 6)}, "
                 desc += f"Targets Stdev = {round(torch.mean(torch.tensor(stds[-100:])).item(), 6)}, "
