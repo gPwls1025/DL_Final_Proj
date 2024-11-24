@@ -9,7 +9,7 @@ from dataset import *
 from models import MLP
 
 from tqdm import tqdm
-from jepa_config import WEIGHT_PATH, DISPLAY_LEN, IMAGE_SIZE, TOL, BORDER_MASK_THRESH, BORDER_SCALE
+from best_jepa_config import WEIGHT_PATH, DISPLAY_LEN, IMAGE_SIZE, TOL, BORDER_MASK_THRESH, BORDER_SCALE
 
 def off_diagonal(x):
     n, m = x.shape
@@ -69,10 +69,10 @@ class BallJEPA(nn.Module):
         ).to("cuda")
 
         self.projector = MLP(
-                layer_sizes=[self.repr_dim * 2, 64, 64, 64],
-                final_activation=None,
-                leaky_relu_mult=pred_leaky_relu_mult
-            ).to("cuda")
+            layer_sizes=[self.repr_dim * 2, 64, 64, 64],
+            final_activation=None,
+            leaky_relu_mult=pred_leaky_relu_mult
+        ).to("cuda")
 
         self.predictor = MLP(
             layer_sizes=pred_layer_sizes,
@@ -172,6 +172,12 @@ class BallJEPA(nn.Module):
             for batch in pbar:
                 optimizer.zero_grad()
 
+                targets_shape = (
+                    batch.states.shape[0],
+                    batch.states.shape[1] - 1,
+                    batch.states.shape[2]
+                )
+
                 states_shape = (
                     batch.states.shape[0] * (batch.states.shape[1] - 1),
                     batch.states.shape[2],
@@ -195,9 +201,10 @@ class BallJEPA(nn.Module):
                 losses.append(loss.item())
                 loss.backward(retain_graph=True)
 
-                secondary_loss = lambda_ * torch.pow(torch.clip(mults, min=TOL, max=1), pow).mean()
-                secondary_losses.append(secondary_loss.item())
-                secondary_loss.backward(retain_graph=True)
+                if training_phase == 1:
+                    secondary_loss = lambda_ * torch.pow(torch.clip(mults, min=TOL, max=1), pow).mean()
+                    secondary_losses.append(secondary_loss.item())
+                    secondary_loss.backward(retain_graph=True)
 
                 if training_phase == 2:
                     states_in_aug1 = augment(states_in)
@@ -210,10 +217,9 @@ class BallJEPA(nn.Module):
                     vicreg_loss.backward()
                     vicreg_losses.append(vicreg_loss.item())
 
-                optimizer.step()
-
                 targets = targets.view(*targets_shape)
                 stds.append(torch.tensor([t.std(dim=0).mean().item() for t in targets]).mean() + TOL)
+                optimizer.step()
 
                 desc = f"Avg RMSE = {round(torch.sqrt(torch.mean(torch.tensor(losses[-DISPLAY_LEN:]))).item(), 6)}, "
                 desc += f"Targets Stdev = {round(torch.mean(torch.tensor(stds[-DISPLAY_LEN:])).item(), 6)}, "
