@@ -70,7 +70,7 @@ class BallJEPA(nn.Module):
 
         self.projector = MLP(
             layer_sizes=[self.repr_dim * 2, 64, 64, 64],
-            final_activation=None,
+            final_activation=torch.nn.Identity(),
             leaky_relu_mult=pred_leaky_relu_mult
         ).to("cuda")
 
@@ -114,7 +114,9 @@ class BallJEPA(nn.Module):
         mults = self.predictor(inputs)
         return ball_encodings + (1 - mults if incl_mults else 1) * actions, mults
 
-    def vicreg_loss(self, z1, z2, var_weight=25.0, inv_weight=25.0, cov_weight=1.0, eps=1e-4):
+    """
+    # what i got after reading vicreg paper 
+    def vicreg_loss(self, z1, z2, var_weight=25.0, inv_weight=15.0, cov_weight=1.0, eps=1e-4):
         # Invariance loss
         sim_loss = inv_weight * F.mse_loss(z1, z2)
         
@@ -132,6 +134,37 @@ class BallJEPA(nn.Module):
                                 off_diagonal(cov_z2).pow_(2).sum() / z2.shape[1])
         
         return sim_loss + std_loss + cov_loss
+    """
+
+    def vicreg_loss(self, z1, z2, inv_coeff=25.0, var_coeff=15.0, cov_coeff=1.0, gamma=1.0, eps=1e-4):
+        """
+        found git repo for vicreg paper: https://github.com/jolibrain/vicreg-loss/blob/master/vicreg_loss/vicreg.py
+        """
+        # Create metrics dictionary to store individual losses
+        metrics = {}
+        
+        # Invariance loss (representation loss)
+        metrics["inv-loss"] = inv_coeff * F.mse_loss(z1, z2)
+        
+        # Variance loss with gamma threshold
+        z1_centered = z1 - z1.mean(dim=0)
+        z2_centered = z2 - z2.mean(dim=0)
+        std_z1 = z1_centered.std(dim=0)
+        std_z2 = z2_centered.std(dim=0)
+        metrics["var-loss"] = var_coeff * (F.relu(gamma - std_z1).mean() + F.relu(gamma - std_z2).mean()) / 2
+        
+        # Covariance loss
+        cov_z1 = (z1_centered.T @ z1_centered) / (z1.shape[0] - 1)
+        cov_z2 = (z2_centered.T @ z2_centered) / (z2.shape[0] - 1)
+        cov_z1.fill_diagonal_(0.0)
+        cov_z2.fill_diagonal_(0.0)
+        metrics["cov-loss"] = cov_coeff * (cov_z1.pow(2).sum() / z1.shape[1] + 
+                                        cov_z2.pow(2).sum() / z2.shape[1]) / 2
+        
+        # Compute total loss
+        metrics["loss"] = sum(metrics.values())
+        
+        return metrics
 
     def forward(self, states, actions, incl_mults=True):
         init_states = states[:,0,:,:-1,:-1]
@@ -199,14 +232,17 @@ class BallJEPA(nn.Module):
 
                 loss = criterion(preds, targets)
                 losses.append(loss.item())
-                loss.backward(retain_graph=True)
-
+                #loss.backward(retain_graph=True)
+                
                 if training_phase == 1:
                     secondary_loss = lambda_ * torch.pow(torch.clip(mults, min=TOL, max=1), pow).mean()
                     secondary_losses.append(secondary_loss.item())
-                    secondary_loss.backward(retain_graph=True)
+                    #secondary_loss.backward(retain_graph=True)
+                    total_loss = loss + secondary_loss
+                    total_loss.backward(retain_graph=True)
 
-                if training_phase == 2:
+                elif training_phase == 2:
+                    # phase 2, add VICreg
                     states_in_aug1 = augment(states_in)
                     states_in_aug2 = augment(states_in)
                     ball_enc1, border_enc1 = self._produce_encodings(states_in_aug1)
@@ -214,7 +250,7 @@ class BallJEPA(nn.Module):
                     z1 = self.projector(torch.cat((ball_enc1, border_enc1), dim=1))
                     z2 = self.projector(torch.cat((ball_enc2, border_enc2), dim=1))
                     vicreg_loss = self.vicreg_loss(z1, z2)
-                    vicreg_loss.backward()
+                    vicreg_loss.backward(retain_graph=True)
                     vicreg_losses.append(vicreg_loss.item())
 
                 targets = targets.view(*targets_shape)
