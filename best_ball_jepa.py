@@ -166,6 +166,30 @@ class BallJEPA(nn.Module):
         
         return metrics
 
+    def visualize_embeddings(z1, z2, epoch, batch_idx):
+        # Reduce dimensionality for visualization if needed
+        z1_np = z1.detach().cpu().numpy()
+        z2_np = z2.detach().cpu().numpy()
+        
+        plt.figure(figsize=(12, 6))
+        
+        # Plot embeddings distribution
+        plt.subplot(1, 2, 1)
+        plt.scatter(z1_np[:, 0], z1_np[:, 1], alpha=0.5, label='z1')
+        plt.scatter(z2_np[:, 0], z2_np[:, 1], alpha=0.5, label='z2')
+        plt.title(f'Embedding Space (Epoch {epoch}, Batch {batch_idx})')
+        plt.legend()
+        
+        # Plot correlation matrix
+        plt.subplot(1, 2, 2)
+        corr_matrix = np.corrcoef(z1_np.T)
+        sns.heatmap(corr_matrix, cmap='coolwarm', center=0)
+        plt.title('Feature Correlations')
+        
+        plt.tight_layout()
+        plt.savefig(f'embeddings_epoch{epoch}_batch{batch_idx}.png')
+        plt.close()
+
     def forward(self, states, actions, incl_mults=True):
         init_states = states[:,0,:,:-1,:-1]
         ball_encs, border_encs = self._produce_encodings(init_states)
@@ -249,6 +273,11 @@ class BallJEPA(nn.Module):
                     ball_enc2, border_enc2 = self._produce_encodings(states_in_aug2)
                     z1 = self.projector(torch.cat((ball_enc1, border_enc1), dim=1))
                     z2 = self.projector(torch.cat((ball_enc2, border_enc2), dim=1))
+
+                    # Visualize embeddings periodically
+                    if batch_idx % 100 == 0:
+                        visualize_embeddings(z1, z2, epoch, batch_idx)
+
                     vicreg_loss = self.vicreg_loss(z1, z2)
                     vicreg_loss.backward(retain_graph=True)
                     vicreg_losses.append(vicreg_loss.item())
