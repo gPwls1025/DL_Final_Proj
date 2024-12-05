@@ -1,4 +1,4 @@
-from best_ball_jepa import BallJEPA
+from best_ball_jepa_v3 import BallJEPA
 from dataset import *
 from best_jepa_config import *
 
@@ -12,5 +12,5 @@ ball_jepa = BallJEPA(
     PRED_LEAKY_RELU_MULT,
     load=True
 )
-#ball_jepa.train_model(wall_data, training_phase=1, num_epochs=5, lr=1e-2, lambda_=5e-5, pow=0.75)
-ball_jepa.train_model(wall_data, training_phase=2, num_epochs=20, lr=1e-3, lambda_=7.5-5, pow=0.75)
+ball_jepa.train_model(wall_data, training_phase=1, num_epochs=5, lr=1e-2, lambda_=5e-5, pow=0.75)
+#ball_jepa.train_model(wall_data, training_phase=2, num_epochs=20, lr=1e-3, lambda_=7.5-5, pow=0.75)
