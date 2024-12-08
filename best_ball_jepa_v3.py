@@ -68,9 +68,17 @@ class BallJEPA(nn.Module):
             leaky_relu_mult=encoder_leaky_relu_mult,
         ).to("cuda")
 
-        self.c = MLP(
+        self.border_encoder = MLP(
             layer_sizes=encoder_layer_sizes,
             final_activation=encoder_final_activation,
+            leaky_relu_mult=encoder_leaky_relu_mult,
+        ).to("cuda")
+
+        self.projector = MLP(
+            #layer_sizes=[self.repr_dim * 2, 64, 64, 64],
+            layer_sizes=[4, 64, 64, 64],
+            final_activation=torch.nn.Identity(),
+            leaky_relu_mult=pred_leaky_relu_mult
         ).to("cuda")
 
         self.predictor = MLP(
@@ -80,7 +88,7 @@ class BallJEPA(nn.Module):
         ).to("cuda")
 
         if load:
-            self.load_state_dict(torch.load(WEIGHT_PATH, weights_only=True))
+            self.load_state_dict(torch.load(PHASE1_WEIGHT_PATH, weights_only=True), strict=False)
 
     def _preprocess_border_images(self, border_images):
         mask_x = torch.arange(IMAGE_SIZE).unsqueeze(0).repeat(IMAGE_SIZE, 1) / IMAGE_SIZE
@@ -91,7 +99,7 @@ class BallJEPA(nn.Module):
 
         return border_images.reshape(border_images.shape[0], border_images.shape[1] * border_images.shape[2])
 
-    def _produce_encodings(self, image_batch):
+    def _produce_encodings(self, image_batch):i
         ball_images, border_images = image_batch[:,0,:,:], image_batch[:,1,:,:]
 
         ball_images = ball_images.reshape(ball_images.shape[0], ball_images.shape[1] * ball_images.shape[2])
@@ -157,14 +165,14 @@ class BallJEPA(nn.Module):
 
     def train_model(self, train_data, training_phase, num_epochs=5, lr=1e-3, lambda_=0, pow=1):
         if training_phase == 1:
-            params = list(self.image_encoder.parameters()) + list(self.predictor.parameters())
+            params = list(self.image_encoder.parameters()) + list(self.predictor.parameters()) 
             self.image_encoder.train()
         elif training_phase == 2:
             # Initialize predictor weights
             for name, param in self.predictor.named_parameters():
                 if 'weight' in name or 'bias' in name:
                     nn.init.uniform_(param,-0.25,0.25)
-            params = list(self.predictor.parameters()) + list(self.border_encoder.parameters())
+            params = list(self.predictor.parameters()) + list(self.border_encoder.parameters()) + list(self.projector.parameters())
             self.image_encoder.eval()
             self.border_encoder.train()
             self.predictor.train()
@@ -245,7 +253,11 @@ class BallJEPA(nn.Module):
                     desc += f", Avg VICReg Loss = {round(torch.mean(torch.tensor(vicreg_losses[-DISPLAY_LEN:])).item(), 4)}"
                 pbar.set_description(desc)
 
-            torch.save(self.state_dict(), WEIGHT_PATH)
+            #torch.save(self.state_dict(), WEIGHT_PATH)
+            if training_phase == 1:
+                torch.save(self.state_dict(), PHASE1_WEIGHT_PATH)
+            else:
+                torch.save(self.state_dict(), PHASE2_WEIGHT_PATH)
 
         self.image_encoder.eval()
         self.border_encoder.eval()

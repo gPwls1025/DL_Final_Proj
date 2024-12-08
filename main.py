@@ -4,8 +4,8 @@ import torch
 from models import MockModel
 import glob
 
-from ball_jepa import BallJEPA
-from jepa_config import *
+from best_ball_jepa import BallJEPA
+from best_jepa_config import *
 
 def get_device():
     """Check for GPU availability."""
@@ -46,21 +46,19 @@ def load_data(device):
 def load_model():
     """Load or initialize the model."""
     # TODO: Replace MockModel with your trained model
-    model = BallJEPA(
-        BALL_CNN_CHANNEL_SIZES,
-        BALL_CNN_OUT_DIM,
-        BALL_CNN_POOL_SIZE,
-        BALL_CNN_KERNEL_SIZE,
-        BALL_CNN_FINAL_ACTIVATION,
-        BORDER_CNN_CHANNEL_SIZES,
-        BORDER_CNN_OUT_DIM,
-        BORDER_CNN_POOL_SIZE,
-        BORDER_CNN_KERNEL_SIZE,
-        BORDER_CNN_FINAL_ACTIVATION,
+        model = BallJEPA(
+        ENCODER_LAYER_SIZES,
+        ENCODER_FINAL_ACTIVATION,
+        ENCODER_LEAKY_RELU_MULT,
         PRED_LAYER_SIZES,
-        PRED_FINAL_ACTIVATION
+        PRED_FINAL_ACTIVATION,
+        PRED_LEAKY_RELU_MULT,
+        incl_border_encs=True,
+        load=False
     )
-    model.load_weights()
+    # Load phase 2 weights explicitly
+    model.load_state_dict(torch.load(PHASE2_WEIGHT_PATH, weights_only=True))
+    #model.load_weights()
     #model = MockModel()
     return model
 

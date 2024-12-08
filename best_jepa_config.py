@@ -8,7 +8,9 @@ BORDER_MASK_THRESH = 0.425
 BORDER_SCALE = 16
 
 DATA_PATH = "/scratch/DL24FA"
-WEIGHT_PATH = "model_weights.pth"
+#WEIGHT_PATH = "model_weights.pth"
+PHASE1_WEIGHT_PATH = "model_weights_phase1.pth"
+PHASE2_WEIGHT_PATH = "model_weights_phase2.pth"
 
 ENCODER_LAYER_SIZES = [
     int(IMAGE_SIZE ** 2),
