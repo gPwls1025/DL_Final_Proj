@@ -9,7 +9,7 @@ from dataset import *
 from models import MLP
 
 from tqdm import tqdm
-from best_jepa_config import WEIGHT_PATH, DISPLAY_LEN, IMAGE_SIZE, TOL, BORDER_MASK_THRESH, BORDER_SCALE
+from best_jepa_config import PHASE1_WEIGHT_PATH, PHASE2_WEIGHT_PATH, DISPLAY_LEN, IMAGE_SIZE, TOL, BORDER_MASK_THRESH, BORDER_SCALE
 
 def off_diagonal(x):
     n, m = x.shape
@@ -99,7 +99,7 @@ class BallJEPA(nn.Module):
 
         return border_images.reshape(border_images.shape[0], border_images.shape[1] * border_images.shape[2])
 
-    def _produce_encodings(self, image_batch):i
+    def _produce_encodings(self, image_batch):
         ball_images, border_images = image_batch[:,0,:,:], image_batch[:,1,:,:]
 
         ball_images = ball_images.reshape(ball_images.shape[0], ball_images.shape[1] * ball_images.shape[2])
