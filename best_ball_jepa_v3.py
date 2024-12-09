@@ -9,7 +9,7 @@ from dataset import *
 from models import MLP
 
 from tqdm import tqdm
-from best_jepa_config import PHASE1_WEIGHT_PATH, PHASE2_WEIGHT_PATH, DISPLAY_LEN, IMAGE_SIZE, TOL, BORDER_MASK_THRESH, BORDER_SCALE
+from best_jepa_config import PHASE1_WEIGHT_PATH, PHASE2_WEIGHT_PATH, DISPLAY_LEN, IMAGE_SIZE, TOL, BORDER_MASK_THRESH, BORDER_SCALE, PRED_LAYER_SIZES_P1, PRED_LAYER_SIZES_P2
 
 def off_diagonal(x):
     n, m = x.shape
@@ -42,8 +42,8 @@ def augment(states):
 
 class BallJEPA(nn.Module):
     def __init__(
-        self, encoder_layer_sizes, encoder_final_activation, encoder_leaky_relu_mult,
-        pred_layer_sizes, pred_final_activation, pred_leaky_relu_mult,
+        self, encoder_layer_sizes, border_encoder_layer_sizes, encoder_final_activation, encoder_leaky_relu_mult,
+        pred_layer_sizes_p1, pred_layer_sizes_p2, pred_final_activation, pred_leaky_relu_mult,
         incl_border_encs=False, load=False
     ):
         super(BallJEPA, self).__init__()
@@ -52,10 +52,13 @@ class BallJEPA(nn.Module):
         self.repr_dim = 2
 
         self.encoder_layer_sizes = encoder_layer_sizes
+        self.border_encoder_layer_sizes = border_encoder_layer_sizes
         self.encoder_final_activation = encoder_final_activation
         self.encoder_leaky_relu_mult = encoder_leaky_relu_mult
 
-        self.pred_layer_sizes = pred_layer_sizes
+        #self.pred_layer_sizes = pred_layer_sizes
+        self.pred_layer_sizes_p1 = pred_layer_sizes_p1
+        self.pred_layer_sizes_p2 = pred_layer_sizes_p2
         self.pred_final_activation = pred_final_activation
         self.pred_leaky_relu_mult = pred_leaky_relu_mult
 
@@ -69,20 +72,20 @@ class BallJEPA(nn.Module):
         ).to("cuda")
 
         self.border_encoder = MLP(
-            layer_sizes=encoder_layer_sizes,
+            layer_sizes=border_encoder_layer_sizes, 
             final_activation=encoder_final_activation,
             leaky_relu_mult=encoder_leaky_relu_mult,
         ).to("cuda")
 
         self.projector = MLP(
             #layer_sizes=[self.repr_dim * 2, 64, 64, 64],
-            layer_sizes=[4, 64, 64, 64],
+            layer_sizes=[64, 64, 64, 64],
             final_activation=torch.nn.Identity(),
-            leaky_relu_mult=pred_leaky_relu_mult
+            leaky_relu_mult=pred_leaky_relu_mult,
         ).to("cuda")
 
         self.predictor = MLP(
-            layer_sizes=pred_layer_sizes,
+            layer_sizes=pred_layer_sizes_p1 if not incl_border_encs else pred_layer_sizes_p2,
             final_activation=pred_final_activation,
             leaky_relu_mult=pred_leaky_relu_mult
         ).to("cuda")
@@ -112,16 +115,21 @@ class BallJEPA(nn.Module):
 
     def _predict_next_state(self, ball_encodings, border_encodings, actions, incl_mults=True, use_border_encs=True):
         actions /= IMAGE_SIZE
-        inputs = torch.cat((
-            ball_encodings,
-            border_encodings if use_border_encs else torch.zeros(*border_encodings.shape).to("cuda"),
-            actions
-        ), dim=1)
-
+        if not use_border_encs:
+            inputs = torch.cat((
+                ball_encodings,
+                actions
+            ), dim=1)
+        else:
+            inputs = torch.cat((
+                ball_encodings,
+                border_encodings,
+                actions
+            ), dim=1)
         mults = self.predictor(inputs)
         return ball_encodings + (1 - mults if incl_mults else 1) * actions, mults
 
-    def vicreg_loss(self, z1, z2, inv_coeff=25.0, var_coeff=15.0, cov_coeff=1.0, gamma=1.0, eps=1e-4):
+    def vicreg_loss(self, z1, z2, inv_coeff=5.0, var_coeff=2.0, cov_coeff=1.0, gamma=1.0, eps=1e-4):
         """
         found git repo for vicreg paper: https://github.com/jolibrain/vicreg-loss/blob/master/vicreg_loss/vicreg.py
         """
